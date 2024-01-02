@@ -1,5 +1,4 @@
 // ignore_for_file: prefer_const_constructors, use_key_in_widget_constructors, use_build_context_synchronously
-
 import 'dart:async';
 import 'package:budget_tracker/Constants/constants.dart';
 import 'package:budget_tracker/Screens/monthly.dart';
@@ -68,7 +67,8 @@ class ExpenseTracker extends StatelessWidget {
 
   void logOut(BuildContext context) async {
     await FirebaseAuth.instance.signOut();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Sign Out Successfull")));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text("Sign Out Successfull")));
   }
 }
 
@@ -86,6 +86,7 @@ class _ExpenseCalendarState extends State<ExpenseCalendar> {
   late StreamController<List<dynamic>> _expensesStreamController;
   late Stream<List<dynamic>> _expensesStream;
   double totalSpent = 0;
+  double totalCredit = 0;
 
   @override
   void initState() {
@@ -93,11 +94,24 @@ class _ExpenseCalendarState extends State<ExpenseCalendar> {
     _selectedDate = DateTime.now();
     _expensesStreamController = StreamController<List<dynamic>>();
     _expensesStream = _expensesStreamController.stream;
+    _subscribeToExpensesUpdates();
     _fetchAndPopulateExpenses(_selectedDate);
+  }
+
+  void _subscribeToExpensesUpdates() {
+    FirebaseFirestore.instance
+        .collection(widget.user.uid)
+        .doc('expenses')
+        .collection('Debit')
+        .snapshots()
+        .listen((event) {
+      _fetchAndPopulateExpenses(_selectedDate);
+    });
 
     FirebaseFirestore.instance
-        .collection('expenses')
-        .where('userId', isEqualTo: widget.user.uid)
+        .collection(widget.user.uid)
+        .doc('expenses')
+        .collection('Credit')
         .snapshots()
         .listen((event) {
       _fetchAndPopulateExpenses(_selectedDate);
@@ -110,14 +124,30 @@ class _ExpenseCalendarState extends State<ExpenseCalendar> {
       DateTime endOfDay = DateTime(date.year, date.month, date.day, 23, 59, 59);
 
       QuerySnapshot querySnapshot = await FirebaseFirestore.instance
-          .collection('expenses')
-          .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
+          .collection(FirebaseAuth.instance.currentUser!.uid)
+          .doc('expenses')
+          .collection('Debit')
+          .where('userId', isEqualTo: FirebaseAuth.instance.currentUser!.uid)
           .where('timestamp', isGreaterThanOrEqualTo: startOfDay)
           .where('timestamp', isLessThanOrEqualTo: endOfDay)
           .orderBy('timestamp')
           .get();
 
-      return querySnapshot.docs.map((doc) => doc.data()).toList();
+      QuerySnapshot creditQuerySnapshot = await FirebaseFirestore.instance
+          .collection(FirebaseAuth.instance.currentUser!.uid)
+          .doc('expenses')
+          .collection('Credit')
+          .where('userId', isEqualTo: FirebaseAuth.instance.currentUser!.uid)
+          .where('timestamp', isGreaterThanOrEqualTo: startOfDay)
+          .where('timestamp', isLessThanOrEqualTo: endOfDay)
+          .orderBy('timestamp')
+          .get();
+
+      List<DocumentSnapshot> allDocs =
+          querySnapshot.docs + creditQuerySnapshot.docs;
+      allDocs.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+
+      return allDocs.map((doc) => doc.data()).toList();
     } catch (e) {
       print('Error fetching expenses for date: $e');
       return [];
@@ -134,13 +164,19 @@ class _ExpenseCalendarState extends State<ExpenseCalendar> {
   }
 
   void calculateTotalSpent(List<dynamic> expenses) {
-    double total = 0;
-    for (var expense in expenses) {
-      total += expense['amount'];
+    double totalS = 0;
+    double totalC = 0;
 
+    for (var expense in expenses) {
+      if (expense['type'] == 'Debit') {
+        totalS += expense['amount'];
+      } else {
+        totalC += expense['amount'];
+      }
     }
     setState(() {
-      totalSpent = total;
+      totalSpent = totalS;
+      totalCredit = totalC;
     });
   }
 
@@ -165,9 +201,18 @@ class _ExpenseCalendarState extends State<ExpenseCalendar> {
                 'Date : ${_selectedDate.day}-${_selectedDate.month}-${_selectedDate.year}',
                 style: TextStyle(color: kwhite, fontSize: 15),
               ),
-              Text(
-                'Total Spent : \u{20B9}${totalSpent.toStringAsFixed(2)}',
-                style: TextStyle(color: kwhite, fontSize: 15),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  Text(
+                    'Total Spent : \u{20B9}${totalSpent.toStringAsFixed(2)}',
+                    style: TextStyle(color: kwhite, fontSize: 15),
+                  ),
+                  Text(
+                    'Total Credit : \u{20B9}${totalCredit.toStringAsFixed(2)}',
+                    style: TextStyle(color: kwhite, fontSize: 15),
+                  ),
+                ],
               ),
             ],
           ),
@@ -197,8 +242,8 @@ class _ExpenseCalendarState extends State<ExpenseCalendar> {
         onDaySelected: (selectedDay, focusedDay) {
           setState(() {
             _selectedDate = selectedDay;
+            _fetchAndPopulateExpenses(selectedDay);
           });
-          _fetchAndPopulateExpenses(selectedDay);
         },
         shouldFillViewport: true,
         headerStyle: HeaderStyle(
@@ -227,7 +272,6 @@ class _ExpenseCalendarState extends State<ExpenseCalendar> {
             color: Colors.blue, // Set the color you want for the selected date
             shape: BoxShape.circle,
           ),
-
           defaultTextStyle: TextStyle(
             color: Colors.white,
             fontSize: 16,
@@ -331,6 +375,8 @@ class ExpenseList extends StatelessWidget {
                     ),
                     Text('Category: ${expense['category']}',
                         style: TextStyle(color: kwhite, fontSize: 16)),
+                    Text('Type: ${expense['type']}',
+                        style: TextStyle(color: kwhite, fontSize: 16)),
                     Text('Time: $formattedDate',
                         style: TextStyle(color: kwhite, fontSize: 16)),
                   ],
@@ -396,16 +442,22 @@ class AddExpenseScreen extends StatelessWidget {
   final TextEditingController titleController = TextEditingController();
   final TextEditingController amountController = TextEditingController();
   String selectedCategory = 'Food';
+  String selectedType = 'Debit';
 
   AddExpenseScreen({required this.user});
 
   void addExpense(BuildContext context) async {
     if (titleController.text.isNotEmpty && amountController.text.isNotEmpty) {
-      await FirebaseFirestore.instance.collection('expenses').add({
+      await FirebaseFirestore.instance
+          .collection(user.uid)
+          .doc('expenses')
+          .collection(selectedType)
+          .add({
         'userId': user.uid,
         'title': titleController.text,
         'amount': double.parse(amountController.text),
         'category': selectedCategory,
+        'type': selectedType,
         'timestamp': FieldValue.serverTimestamp(),
       });
       Navigator.pop(context);
@@ -451,6 +503,25 @@ class AddExpenseScreen extends StatelessWidget {
                 ),
               ),
               SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: selectedType,
+                onChanged: (value) {
+                  selectedType = value!;
+                },
+                items: ['Credit', 'Debit'].map((String type) {
+                  return DropdownMenuItem<String>(
+                    value: type,
+                    child: Text(type),
+                  );
+                }).toList(),
+                decoration: InputDecoration(
+                  labelText: 'Type',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+              SizedBox(height: 16),
               ElevatedButton(
                 onPressed: () => addExpense(context),
                 child: Text('Add Expense'),
@@ -469,18 +540,22 @@ class ModifyExpenseScreen extends StatelessWidget {
   final TextEditingController titleController = TextEditingController();
   final TextEditingController amountController = TextEditingController();
   String selectedCategory = 'Food';
+  String selectedType = 'Debit';
 
   ModifyExpenseScreen({required this.user, required this.expense}) {
     titleController.text = expense['title'];
     amountController.text = expense['amount'].toString();
     selectedCategory = expense['category'];
+    selectedType = expense['type'];
   }
 
   void modifyExpense(BuildContext context) async {
     try {
       if (titleController.text.isNotEmpty && amountController.text.isNotEmpty) {
         QuerySnapshot querySnapshot = await FirebaseFirestore.instance
-            .collection('expenses')
+            .collection(user.uid)
+            .doc('expenses')
+            .collection(selectedType)
             .where('userId', isEqualTo: user.uid)
             .where('title', isEqualTo: expense['title'])
             .get();
@@ -490,12 +565,15 @@ class ModifyExpenseScreen extends StatelessWidget {
           String documentId = querySnapshot.docs.first.id;
 
           await FirebaseFirestore.instance
-              .collection('expenses')
+              .collection(user.uid)
+              .doc('expenses')
+              .collection(selectedType)
               .doc(documentId)
               .update({
             'title': titleController.text,
             'amount': double.parse(amountController.text),
             'category': selectedCategory,
+            'type': selectedType,
           });
 
           Navigator.pop(context);
@@ -544,6 +622,25 @@ class ModifyExpenseScreen extends StatelessWidget {
                 ),
               ),
             ),
+            SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              value: selectedType,
+              onChanged: (value) {
+                selectedType = value!;
+              },
+              items: ['Credit', 'Debit'].map((String type) {
+                return DropdownMenuItem<String>(
+                  value: type,
+                  child: Text(type),
+                );
+              }).toList(),
+              decoration: InputDecoration(
+                labelText: 'Type',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -564,7 +661,18 @@ class ModifyExpenseScreen extends StatelessWidget {
 void deleteExpense(User user, Map<String, dynamic> expense) async {
   try {
     QuerySnapshot querySnapshot = await FirebaseFirestore.instance
-        .collection('expenses')
+        .collection(user.uid)
+        .doc('expenses')
+        .collection('Debit')
+        .where('userId', isEqualTo: user.uid)
+        .where('title', isEqualTo: expense['title'])
+        .get();
+
+    // Fetch and add expenses from 'Credit' collection
+    QuerySnapshot creditQuerySnapshot = await FirebaseFirestore.instance
+        .collection(user.uid)
+        .doc('expenses')
+        .collection('Credit')
         .where('userId', isEqualTo: user.uid)
         .where('title', isEqualTo: expense['title'])
         .get();
@@ -572,13 +680,21 @@ void deleteExpense(User user, Map<String, dynamic> expense) async {
     if (querySnapshot.docs.isNotEmpty) {
       // Assuming there's only one document with the same title for a user
       String documentId = querySnapshot.docs.first.id;
-
       await FirebaseFirestore.instance
-          .collection('expenses')
+          .collection(user.uid)
+          .doc('expenses')
+          .collection('Debit')
           .doc(documentId)
           .delete();
     } else {
-      print('Document does not exist. Unable to delete.');
+      String documentId = creditQuerySnapshot.docs.first.id;
+
+      await FirebaseFirestore.instance
+          .collection(user.uid)
+          .doc('expenses')
+          .collection('Credit')
+          .doc(documentId)
+          .delete();
     }
   } catch (e) {
     print('Error deleting expense: $e');

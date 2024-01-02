@@ -16,13 +16,16 @@ class _MonthlyAnalysisState extends State<MonthlyAnalysis> {
   late DateTime _selectedMonth;
   late StreamController<List<dynamic>> _monthlyExpensesStreamController;
   late Stream<List<dynamic>> _monthlyExpensesStream;
-  late double totalMonthlyExpense;
+  double totalSpent = 0;
+  double totalCredit = 0;
+  String selectedType = 'All';
 
   @override
   void initState() {
     super.initState();
     _selectedMonth = DateTime.now();
-    totalMonthlyExpense = 0;
+    totalSpent = 0;
+    totalCredit = 0;
     _monthlyExpensesStreamController = StreamController<List<dynamic>>();
     _monthlyExpensesStream = _monthlyExpensesStreamController.stream;
     _fetchAndPopulateMonthlyExpenses(_selectedMonth);
@@ -30,18 +33,36 @@ class _MonthlyAnalysisState extends State<MonthlyAnalysis> {
 
   Future<List<dynamic>> getMonthlyExpenses(DateTime selectedMonth) async {
     try {
-      DateTime startOfMonth = DateTime(selectedMonth.year, selectedMonth.month, 1, 0, 0, 0);
-      DateTime endOfMonth = DateTime(selectedMonth.year, selectedMonth.month + 1, 0, 23, 59, 59);
+      DateTime startOfMonth =
+          DateTime(selectedMonth.year, selectedMonth.month, 1, 0, 0, 0);
+      DateTime endOfMonth =
+          DateTime(selectedMonth.year, selectedMonth.month + 1, 0, 23, 59, 59);
 
       QuerySnapshot querySnapshot = await FirebaseFirestore.instance
-          .collection('expenses')
-          .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
+          .collection(FirebaseAuth.instance.currentUser!.uid)
+          .doc('expenses')
+          .collection('Debit')
+          .where('userId', isEqualTo: FirebaseAuth.instance.currentUser!.uid)
           .where('timestamp', isGreaterThanOrEqualTo: startOfMonth)
           .where('timestamp', isLessThanOrEqualTo: endOfMonth)
           .orderBy('timestamp')
           .get();
 
-      return querySnapshot.docs.map((doc) => doc.data()).toList();
+      QuerySnapshot creditQuerySnapshot = await FirebaseFirestore.instance
+          .collection(FirebaseAuth.instance.currentUser!.uid)
+          .doc('expenses')
+          .collection('Credit')
+          .where('userId', isEqualTo: FirebaseAuth.instance.currentUser!.uid)
+          .where('timestamp', isGreaterThanOrEqualTo: startOfMonth)
+          .where('timestamp', isLessThanOrEqualTo: endOfMonth)
+          .orderBy('timestamp')
+          .get();
+
+      List<DocumentSnapshot> allDocs =
+          querySnapshot.docs + creditQuerySnapshot.docs;
+      allDocs.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+
+      return allDocs.map((doc) => doc.data()).toList();
     } catch (e) {
       print('Error fetching monthly expenses: $e');
       return [];
@@ -58,12 +79,19 @@ class _MonthlyAnalysisState extends State<MonthlyAnalysis> {
   }
 
   void calculateTotalMonthlyExpense(List<dynamic> monthlyExpenses) {
-    double total = 0;
+    double totalS = 0;
+    double totalC = 0;
+
     for (var expense in monthlyExpenses) {
-      total += expense['amount'];
+      if (expense['type'] == 'Debit') {
+        totalS += expense['amount'];
+      } else {
+        totalC += expense['amount'];
+      }
     }
     setState(() {
-      totalMonthlyExpense = total;
+      totalSpent = totalS;
+      totalCredit = totalC;
     });
   }
 
@@ -89,14 +117,17 @@ class _MonthlyAnalysisState extends State<MonthlyAnalysis> {
       backgroundColor: Colors.black,
       appBar: AppBar(
         leading: IconButton(
-          onPressed: (){
+          onPressed: () {
             Navigator.pop(context);
           },
-          icon: Icon(Icons.arrow_back,color: kwhite,),
+          icon: const Icon(
+            Icons.arrow_back,
+            color: kwhite,
+          ),
         ),
         backgroundColor: kdark,
         centerTitle: true,
-        title: Text(
+        title: const Text(
           'Monthly Analysis',
           style: TextStyle(fontSize: 24, color: Colors.white),
         ),
@@ -109,31 +140,79 @@ class _MonthlyAnalysisState extends State<MonthlyAnalysis> {
               color: kdark,
               borderRadius: BorderRadius.circular(15),
             ),
-            margin: EdgeInsets.symmetric(horizontal: 15,vertical: 10),
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             child: Column(
               children: [
                 ElevatedButton(
                   onPressed: () => _selectMonth(context),
-                  child: Text('Select Month'),
+                  child: const Text('Select Month'),
                 ),
-                SizedBox(height: 16),
-                Text(
-                  'Total Monthly Expense',
-                  style: TextStyle(color: kwhite, fontSize: 18),
+                const SizedBox(height: 6),
+                DropdownButtonFormField<String>(
+                  dropdownColor: kdark,
+                  style: TextStyle(color: kwhite),
+                  value: selectedType,
+                  onChanged: (value) {
+                    setState(() {
+                      selectedType = value!;
+                    });
+                  },
+                  items: ['Credit', 'Debit', 'All'].map((String type) {
+                    return DropdownMenuItem<String>(
+                      value: type,
+                      child: Text(type),
+                    );
+                  }).toList(),
+                  decoration: InputDecoration(
+                    labelText: 'Type',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
-                Text(
-                  '\u{20B9}${totalMonthlyExpense.toStringAsFixed(2)}',
-                  style: TextStyle(color: kwhite, fontSize: 22, fontWeight: FontWeight.bold),
+                const SizedBox(height: 6),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    const Text(
+                      'Total Monthly Spent',
+                      style: TextStyle(color: kwhite, fontSize: 18),
+                    ),
+                    Text(
+                      '\u{20B9}${totalSpent.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                          color: kwhite,
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    const Text(
+                      'Total Monthly Credit',
+                      style: TextStyle(color: kwhite, fontSize: 18),
+                    ),
+                    Text(
+                      '\u{20B9}${totalCredit.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                          color: kwhite,
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold),
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
-          SizedBox(height: 16),
+          const SizedBox(height: 16),
           Expanded(
             child: MonthlyExpenseList(
               user: widget.user,
               monthlyExpensesStream: _monthlyExpensesStream,
+              selected: selectedType,
             ),
           ),
         ],
@@ -151,8 +230,12 @@ class _MonthlyAnalysisState extends State<MonthlyAnalysis> {
 class MonthlyExpenseList extends StatelessWidget {
   final User user;
   final Stream<List<dynamic>> monthlyExpensesStream;
+  final String selected;
 
-  MonthlyExpenseList({required this.user, required this.monthlyExpensesStream});
+  MonthlyExpenseList(
+      {required this.user,
+      required this.monthlyExpensesStream,
+      required this.selected});
 
   @override
   Widget build(BuildContext context) {
@@ -160,14 +243,14 @@ class MonthlyExpenseList extends StatelessWidget {
       stream: monthlyExpensesStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return Center(
+          return const Center(
             child: CircularProgressIndicator(),
           );
         }
 
         List<dynamic>? monthlyExpenses = snapshot.data;
         if (monthlyExpenses == null || monthlyExpenses.isEmpty) {
-          return Center(
+          return const Center(
             child: Text(
               'No expenses for the selected month.',
               style: TextStyle(color: kwhite, fontSize: 20),
@@ -175,21 +258,31 @@ class MonthlyExpenseList extends StatelessWidget {
           );
         }
 
+        List<dynamic> filteredExpenses = monthlyExpenses.where((expense) {
+          if (selected == 'All') {
+            return true;
+          } else if (selected == 'Credit') {
+            return expense['type'] == 'Credit';
+          } else if (selected == 'Debit') {
+            return expense['type'] == 'Debit';
+          }
+          return false;
+        }).toList();
+
         return ListView.builder(
-          itemCount: monthlyExpenses.length,
+          itemCount: filteredExpenses.length,
           itemBuilder: (context, index) {
-            var expense = monthlyExpenses[index];
+            var expense = filteredExpenses[index];
             var timestamp = (expense['timestamp'] as Timestamp).toDate();
             var formattedDate = DateFormat.yMMMMd().format(timestamp);
-
             return Card(
-              margin: EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+              margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
               elevation: 4.0,
               color: kdark,
               child: ListTile(
                 title: Text(
                   expense['title'],
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     color: kwhite,
                     fontSize: 20,
@@ -200,15 +293,19 @@ class MonthlyExpenseList extends StatelessWidget {
                   children: [
                     Text(
                       '\u{20B9}${expense['amount']}',
-                      style: TextStyle(color: kwhite, fontSize: 16),
+                      style: const TextStyle(color: kwhite, fontSize: 16),
                     ),
                     Text(
                       'Category: ${expense['category']}',
-                      style: TextStyle(color: kwhite, fontSize: 16),
+                      style: const TextStyle(color: kwhite, fontSize: 16),
+                    ),
+                    Text(
+                      'Type: ${expense['type']}',
+                      style: const TextStyle(color: kwhite, fontSize: 16),
                     ),
                     Text(
                       'Time: $formattedDate',
-                      style: TextStyle(color: kwhite, fontSize: 16),
+                      style: const TextStyle(color: kwhite, fontSize: 16),
                     ),
                   ],
                 ),
